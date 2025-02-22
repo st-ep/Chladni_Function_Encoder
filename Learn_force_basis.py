@@ -1,0 +1,156 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+import argparse
+import os
+from datetime import datetime
+
+from FunctionEncoder import FunctionEncoder
+from FunctionEncoder import MSECallback, ListCallback, TensorboardCallback
+from ChladniDataset import ChladniDataset   # use our new dataset
+
+# parse args
+parser = argparse.ArgumentParser()
+parser.add_argument("--n_basis", type=int, default=100)
+parser.add_argument("--lr", type=float, default=0.001)
+parser.add_argument("--train_method", type=str, default="least_squares")
+parser.add_argument("--epochs", type=int, default=5000)
+parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--load_path", type=str, default=None)
+parser.add_argument("--residuals", action="store_true")
+args = parser.parse_args()
+
+epochs = args.epochs
+n_basis = args.n_basis
+lr = args.lr
+train_method = args.train_method
+load_path = args.load_path
+residuals = args.residuals
+arch = 'MLP'
+
+seed = args.seed
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+print(f"""
+Hyperparameters:
+- Epochs: {epochs}
+- Number of Basis Functions: {n_basis}
+- Learning Rate: {lr}
+- Training Method: {train_method}
+- Load Path: {load_path}
+- Residuals: {residuals}
+- Architecture: {arch}
+""")
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print('device: ', device)
+
+if load_path is None:
+    logdir = f"parameterized_Chladni_EncoderOnly/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+else:
+    logdir = load_path
+    print("loading a trained model...")
+
+# create dataset (ChladniDataset internally sets input_size=(2,) and output_size=(1,))
+dataset = ChladniDataset()
+
+if load_path is None:
+    print("training a new model...")
+    model = FunctionEncoder(input_size=dataset.input_size,
+                            output_size=dataset.output_size,
+                            data_type=dataset.data_type,
+                            n_basis=n_basis,
+                            model_type=arch,
+                            method=train_method,
+                            use_residuals_method=residuals).to(device)
+    print('Number of parameters:', sum(p.numel() for p in model.parameters()))
+    
+    # update learning rate
+    for param_group in model.opt.param_groups:
+        param_group['lr'] = lr
+    print('lr: ', model.opt.param_groups[0]['lr'])
+    
+    # create callbacks
+    cb1 = TensorboardCallback(logdir)
+    cb2 = MSECallback(dataset, device=device, tensorboard=cb1.tensorboard)
+    callback = ListCallback([cb1, cb2])
+    
+    # train the model
+    model.train_model(dataset, epochs=epochs, callback=callback)
+    
+    # save the model
+    torch.save(model.state_dict(), f"{logdir}/model.pth")
+    print('saving the model...')
+else:
+    model = FunctionEncoder(input_size=dataset.input_size,
+                            output_size=dataset.output_size,
+                            data_type=dataset.data_type,
+                            n_basis=n_basis,
+                            model_type=arch,
+                            method=train_method,
+                            use_residuals_method=residuals).to(device)
+    model.load_state_dict(torch.load(f"{logdir}/model.pth"))
+
+# visualize the obtained solution
+# For visualization, we pick one training sample and use the full grid from the dataset.
+with torch.no_grad():
+    # Get the full grid of coordinate pairs (shape: [total_points, 2])
+    grid = dataset.grid  
+    total_points = dataset.num_points
+    
+    # For computing the representation, select a support set from one training sample.
+    n_examples = dataset.n_examples_per_sample
+    indices = torch.randperm(total_points)[:n_examples]
+    support_xs = grid[indices].unsqueeze(0)  # shape: (1, n_examples, 2)
+    # Get corresponding S_train values from the first sample and flatten S_train to align with grid.
+    S_train_flat = dataset.S_train[0].view(-1, 1)  # shape: (total_points, 1)
+    support_S = S_train_flat[indices].unsqueeze(0)   # shape: (1, n_examples, 1)
+    
+    representations, _ = model.compute_representation(support_xs, support_S)
+    
+    # Predict on the full grid
+    grid_batch = grid.unsqueeze(0)  # shape: (1, total_points, 2)
+    S_pred = model.predict(grid_batch, representations)  # shape: (1, total_points, 1)
+    
+    # Reshape predictions and ground truth to square images for contour plotting.
+    num_side = int(np.sqrt(total_points))
+    S_pred_img = S_pred.view(num_side, num_side).detach().cpu().numpy()
+    S_true_img = dataset.S_train[0].view(num_side, num_side, 1).squeeze(-1).detach().cpu().numpy()
+    
+    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+    im = axs[0].contourf(S_pred_img, levels=50, cmap='viridis')
+    axs[0].set_title('Predicted S_train')
+    fig.colorbar(im, ax=axs[0])
+    
+    im = axs[1].contourf(S_true_img, levels=50, cmap='viridis')
+    axs[1].set_title('True S_train')
+    fig.colorbar(im, ax=axs[1])
+    
+    im = axs[2].contourf(np.abs(S_true_img - S_pred_img), levels=50, cmap='viridis')
+    axs[2].set_title('Absolute Error')
+    fig.colorbar(im, ax=axs[2])
+    
+    fig.savefig(f'{logdir}/results.png', dpi=400, bbox_inches='tight')
+
+# Final evaluation error on a larger batch
+dataset_eval = ChladniDataset(n_functions_per_sample=512, n_points_per_sample=8192)
+with torch.no_grad():
+    example_xs, example_S, query_xs, query_S, _ = dataset_eval.sample()
+    example_xs = example_xs.to(device)
+    example_S = example_S.to(device)
+    representations, _ = model.compute_representation(example_xs, example_S)
+    S_preds = model.predict(query_xs, representations)  # shape: (n_functions, n_points, 1)
+    error = torch.mean((S_preds - query_S)**2)
+    print('final error: ', error.item())
+    l2_norm_diff = torch.norm(S_preds - query_S, dim=(1, 2))
+    l2_norm_true = torch.norm(query_S, dim=(1, 2))
+    l2_relative_errors = l2_norm_diff / l2_norm_true
+    average_l2_relative_error = torch.mean(l2_relative_errors)
+    print('average solution L2 relative error: ', average_l2_relative_error.item())
