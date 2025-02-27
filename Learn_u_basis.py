@@ -11,7 +11,7 @@ import gc
 from FunctionEncoder import FunctionEncoder
 from FunctionEncoder import MSECallback, ListCallback, TensorboardCallback
 from FunctionEncoder.Callbacks.BaseCallback import BaseCallback
-from ChladniDataset import ChladniDataset   # use our new dataset
+from ChladniDataset_u import ChladniDataset   # use our updated dataset for Z values
 
 print("PyTorch version:", torch.__version__)
 print("CUDA available:", torch.cuda.is_available())
@@ -58,7 +58,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print('device: ', device)
 
 if load_path is None:
-    logdir = f"parameterized_Chladni_EncoderOnly/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    logdir = f"parameterized_Chladni_Z_EncoderOnly/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 else:
     logdir = load_path
     print("loading a trained model...")
@@ -154,46 +154,69 @@ with torch.no_grad():
         n_examples = dataset.n_examples
         indices = torch.randperm(total_points)[:n_examples]
         support_xs = grid[indices].unsqueeze(0)  # shape: (1, n_examples, 2)
-        # Get corresponding S_train values from the current sample
-        S_train_flat = dataset.S_train[sample_idx].view(-1, 1)  # shape: (total_points, 1)
-        support_S = S_train_flat[indices].unsqueeze(0)   # shape: (1, n_examples, 1)
         
-        representations, _ = model.compute_representation(support_xs, support_S)
+        # Get corresponding Z_train values from the current sample
+        # Use reshape instead of view to handle non-contiguous tensors
+        Z_train_flat = dataset.Z_train[sample_idx].reshape(-1, 1)  # shape: (total_points, 1)
+        support_Z = Z_train_flat[indices].unsqueeze(0)   # shape: (1, n_examples, 1)
+        
+        representations, _ = model.compute_representation(support_xs, support_Z)
         
         # Predict on the full grid
         grid_batch = grid.unsqueeze(0)  # shape: (1, total_points, 2)
-        S_pred = model.predict(grid_batch, representations)  # shape: (1, total_points, 1)
+        Z_pred = model.predict(grid_batch, representations)  # shape: (1, total_points, 1)
         
         # Reshape predictions and ground truth to square images for contour plotting
         num_side = int(np.sqrt(total_points))
-        S_pred_img = S_pred.view(num_side, num_side).detach().cpu().numpy()
-        S_true_img = dataset.S_train[sample_idx].view(num_side, num_side, 1).squeeze(-1).detach().cpu().numpy()
+        Z_pred_img = Z_pred.reshape(num_side, num_side).detach().cpu().numpy()
+        Z_true_img = dataset.Z_train[sample_idx].reshape(num_side, num_side, 1).squeeze(-1).detach().cpu().numpy()
         
         # Create a new figure for each sample
         fig, axs = plt.subplots(1, 3, figsize=(18, 6))
         
-        im = axs[0].contourf(S_pred_img, levels=50, cmap='viridis')
-        axs[0].set_title('Predicted S_train')
+        im = axs[0].contourf(Z_pred_img, levels=50, cmap='viridis')
+        axs[0].set_title('Predicted Z (Displacement)')
         fig.colorbar(im, ax=axs[0])
         
-        im = axs[1].contourf(S_true_img, levels=50, cmap='viridis')
-        axs[1].set_title('True S_train')
+        im = axs[1].contourf(Z_true_img, levels=50, cmap='viridis')
+        axs[1].set_title('True Z (Displacement)')
         fig.colorbar(im, ax=axs[1])
         
-        im = axs[2].contourf(np.abs(S_true_img - S_pred_img), levels=50, cmap='viridis')
+        im = axs[2].contourf(np.abs(Z_true_img - Z_pred_img), levels=50, cmap='viridis')
         axs[2].set_title('Absolute Error')
         fig.colorbar(im, ax=axs[2])
         
         plt.suptitle(f'Sample {sample_idx + 1}')
         fig.savefig(f'{logdir}/results{sample_idx + 1}.png', dpi=400, bbox_inches='tight')
         plt.close(fig)  # Close the figure to free memory
+        
+        # Also plot the zero contour lines (Chladni patterns)
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), facecolor='black')
+        
+        # True Chladni pattern
+        axs[0].contour(Z_true_img, levels=[0], colors=['#d9a521'], linewidths=2)
+        axs[0].set_title('True Chladni Pattern', color='white')
+        axs[0].set_facecolor('black')
+        axs[0].set_xticks([])
+        axs[0].set_yticks([])
+        
+        # Predicted Chladni pattern
+        axs[1].contour(Z_pred_img, levels=[0], colors=['#d9a521'], linewidths=2)
+        axs[1].set_title('Predicted Chladni Pattern', color='white')
+        axs[1].set_facecolor('black')
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        
+        plt.tight_layout()
+        fig.savefig(f'{logdir}/chladni_pattern{sample_idx + 1}.png', dpi=400, bbox_inches='tight')
+        plt.close(fig)
 
 # Final evaluation error on a larger batch
 with torch.no_grad():
-    example_xs, example_S, query_xs, query_S, _ = dataset_eval.sample()
+    example_xs, example_Z, query_xs, query_Z, _ = dataset_eval.sample()
     example_xs = example_xs.to(device)
-    example_S = example_S.to(device)
-    representations, _ = model.compute_representation(example_xs, example_S)
-    S_preds = model.predict(query_xs, representations)  # shape: (n_functions, n_points, 1)
-    error = torch.mean((S_preds - query_S)**2)
+    example_Z = example_Z.to(device)
+    representations, _ = model.compute_representation(example_xs, example_Z)
+    Z_preds = model.predict(query_xs, representations)  # shape: (n_functions, n_points, 1)
+    error = torch.mean((Z_preds - query_Z)**2)
     print('final error: ', error.item())

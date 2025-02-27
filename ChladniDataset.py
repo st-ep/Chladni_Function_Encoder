@@ -22,7 +22,7 @@ class ChladniDataset(BaseDataset):
                          data_type="deterministic",
                          n_functions=n_functions,
                          n_examples=n_examples,
-                         n_queries=625)  # Set n_queries to total grid points (100x100)
+                         n_queries=625)  # Set n_queries to match grid size (25x25=625)
         
         # Rest of the initialization code...
         if device == "auto":
@@ -76,10 +76,14 @@ class ChladniDataset(BaseDataset):
         self.num_points = self.grid.shape[0]
         self.N_train = self.alpha_train.shape[0]
         
+        # Store grid dimensions for reference
+        self.grid_size = (len(x), len(y))
+        
         # Add data validation checks after loading
         print(f"Dataset Statistics:")
         print(f"S_train shape: {self.S_train.shape}")
         print(f"Grid shape: {self.grid.shape}")
+        print(f"Grid dimensions: {self.grid_size[0]}x{self.grid_size[1]} ({self.num_points} total points)")
         
         # Print value ranges
         print("\nValue ranges:")
@@ -93,18 +97,19 @@ class ChladniDataset(BaseDataset):
         Returns:
           - example_xs: (n_functions, n_examples, 2) coordinate pairs for support points.
           - example_S: (n_functions, n_examples, 1) corresponding forcing values.
-          - query_xs: (n_functions, n_points, 2) coordinate pairs for query points.
-          - query_S: (n_functions, n_points, 1) corresponding forcing values.
+          - query_xs: (n_functions, n_queries, 2) coordinate pairs for query points.
+          - query_S: (n_functions, n_queries, 1) corresponding forcing values.
           - dict: A dictionary with key "alpha_train" containing the alpha coefficients for each function.
         """
         with torch.no_grad():
             n_functions = self.n_functions
             n_examples = self.n_examples
+            n_queries = self.n_queries
             
             # Randomly select n_functions training samples
             indices = torch.randint(0, self.N_train, (n_functions,))
             
-            total_points = self.num_points  # This should be 10000 (100x100)
+            total_points = self.num_points  # This should be 625 (25x25)
             # Determine whether to sample with replacement if requested number exceeds total points
             replace_examples = n_examples > total_points
             
@@ -114,25 +119,37 @@ class ChladniDataset(BaseDataset):
                 for _ in range(n_functions)
             ], dim=0).to(self.device)
             
-            # For queries, use all grid points
-            query_xs = self.grid.unsqueeze(0).expand(n_functions, -1, -1)  # shape: (n_functions, total_points, 2)
+            # For queries, either use all grid points or sample a subset
+            if n_queries == total_points:
+                # Use all grid points
+                query_indices = torch.arange(total_points).unsqueeze(0).expand(n_functions, -1).to(self.device)
+            else:
+                # Sample a subset of grid points
+                replace_queries = n_queries > total_points
+                query_indices = torch.stack([
+                    torch.tensor(np.random.choice(total_points, n_queries, replace=replace_queries))
+                    for _ in range(n_functions)
+                ], dim=0).to(self.device)
             
-            # Gather coordinate pairs for the support set
-            example_xs = self.grid[example_indices]  # shape: (n_functions, n_examples, 2)
+            # Gather coordinate pairs for the support set and query set
+            example_xs = torch.stack([self.grid[example_indices[i]] for i in range(n_functions)], dim=0)
+            query_xs = torch.stack([self.grid[query_indices[i]] for i in range(n_functions)], dim=0)
             
             # Get the selected functions' data
-            selected_S = self.S_train[indices]  # shape: [n_functions, 100, 100, 1]
+            selected_S = self.S_train[indices]  # shape: [n_functions, grid_size[0], grid_size[1], 1]
             
             # Reshape to flatten spatial dimensions
-            selected_S_flat = selected_S.view(n_functions, -1, 1)  # shape: [n_functions, 10000, 1]
+            selected_S_flat = selected_S.view(n_functions, -1, 1)  # shape: [n_functions, total_points, 1]
             
             # For examples, gather the sampled points
             example_S = torch.stack([
                 selected_S_flat[i][example_indices[i]] for i in range(n_functions)
             ], dim=0)
             
-            # For queries, use all points
-            query_S = selected_S_flat
+            # For queries, gather the sampled points
+            query_S = torch.stack([
+                selected_S_flat[i][query_indices[i]] for i in range(n_functions)
+            ], dim=0)
             
             # Gather the corresponding alpha coefficients
             alpha = self.alpha_train[indices]
@@ -140,13 +157,14 @@ class ChladniDataset(BaseDataset):
             # Add verification of output shapes and values
             assert example_xs.shape == (n_functions, n_examples, 2), f"Expected example_xs shape {(n_functions, n_examples, 2)}, got {example_xs.shape}"
             assert example_S.shape == (n_functions, n_examples, 1), f"Expected example_S shape {(n_functions, n_examples, 1)}, got {example_S.shape}"
-            assert query_xs.shape == (n_functions, total_points, 2), f"Expected query_xs shape {(n_functions, total_points, 2)}, got {query_xs.shape}"
-            assert query_S.shape == (n_functions, total_points, 1), f"Expected query_S shape {(n_functions, total_points, 1)}, got {query_S.shape}"
+            assert query_xs.shape == (n_functions, n_queries, 2), f"Expected query_xs shape {(n_functions, n_queries, 2)}, got {query_xs.shape}"
+            assert query_S.shape == (n_functions, n_queries, 1), f"Expected query_S shape {(n_functions, n_queries, 1)}, got {query_S.shape}"
             
             return example_xs, example_S, query_xs, query_S, {
                 "alpha_train": alpha,
                 "S_mean": self.S_mean,
-                "S_std": self.S_std
+                "S_std": self.S_std,
+                "grid_size": self.grid_size
             }
 
 if __name__ == "__main__":
