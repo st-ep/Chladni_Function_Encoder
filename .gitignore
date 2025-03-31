@@ -1,0 +1,52 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Local development settings
+.env
+.idea/
+.vscode/
+
+# Large data files (if needed)
+*.mat
+*.h5
+*.pkl
+*.pt
+*.pth
+
+# Model checkpoints (if you don't want to include them)
+# *.pt
+# *.pth
+
+# Logs
+logs/
+*.log
+
+# Output directory
+output/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.txt
+*.csv
+*.json
+*.yaml
+*.yml
+*.md
+*.0
