@@ -21,10 +21,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n_basis", type=int, default=110)
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--train_method", type=str, default="least_squares")
-parser.add_argument("--epochs", type=int, default=250000)
+parser.add_argument("--epochs", type=int, default=100000)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--residuals", action="store_true")
+parser.add_argument("--regularization_parameter", type=float, default=5.0)
 args = parser.parse_args()
 
 epochs = args.epochs
@@ -34,7 +35,7 @@ train_method = args.train_method
 load_path = args.load_path
 residuals = args.residuals
 arch = 'MLP'
-
+regularization_parameter = args.regularization_parameter
 seed = args.seed
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -52,6 +53,7 @@ Hyperparameters:
 - Load Path: {load_path}
 - Residuals: {residuals}
 - Architecture: {arch}
+- Regularization Parameter: {regularization_parameter}
 """)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
