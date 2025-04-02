@@ -16,8 +16,8 @@ parser.add_argument("--n_basis", type=int, default=110)
 parser.add_argument("--train_method", type=str, default="least_squares")
 parser.add_argument("--n_samples", type=int, default=10000)
 parser.add_argument("--seed", type=int, default=0)
-parser.add_argument("--s_model_path", type=str, default="parameterized_Chladni_EncoderOnly/2025-02-25_13-08-10")
-parser.add_argument("--z_model_path", type=str, default="parameterized_Chladni_Z_EncoderOnly/2025-02-25_13-02-10")
+parser.add_argument("--s_model_path", type=str, default="parameterized_Chladni_EncoderOnly/2025-02-28_17-17-37")
+parser.add_argument("--z_model_path", type=str, default="parameterized_Chladni_Z_EncoderOnly/2025-02-28_17-16-52")
 parser.add_argument("--output_dir", type=str, default="basis_to_basis_dataset")
 args = parser.parse_args()
 
@@ -55,7 +55,12 @@ s_model = FunctionEncoder(
     method=args.train_method,
     use_residuals_method=False
 ).to(device)
-s_model.load_state_dict(torch.load(f"{args.s_model_path}/model.pth"))
+
+# Modified loading code to handle unexpected keys
+state_dict = torch.load(f"{args.s_model_path}/model.pth")
+# Filter out keys related to average_function that are causing the error
+filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith('average_function')}
+s_model.load_state_dict(filtered_state_dict, strict=False)
 s_model.eval()
 print("Loaded S_train model")
 
@@ -69,7 +74,12 @@ z_model = FunctionEncoder(
     method=args.train_method,
     use_residuals_method=False
 ).to(device)
-z_model.load_state_dict(torch.load(f"{args.z_model_path}/model.pth"))
+
+# Modified loading code to handle unexpected keys
+state_dict = torch.load(f"{args.z_model_path}/model.pth")
+# Filter out keys related to average_function that are causing the error
+filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith('average_function')}
+z_model.load_state_dict(filtered_state_dict, strict=False)
 z_model.eval()
 print("Loaded Z_train model")
 

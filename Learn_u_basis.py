@@ -21,11 +21,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n_basis", type=int, default=110)
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--train_method", type=str, default="least_squares")
-parser.add_argument("--epochs", type=int, default=100000)
+parser.add_argument("--epochs", type=int, default=2000000)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--residuals", action="store_true")
-parser.add_argument("--regularization_parameter", type=float, default=5.0)
+parser.add_argument("--regularization_parameter", type=float, default=2.0)
 args = parser.parse_args()
 
 epochs = args.epochs
@@ -84,6 +84,7 @@ if load_path is None:
                             n_basis=n_basis,
                             model_type=arch,
                             method=train_method,
+                            regularization_parameter=regularization_parameter,
                             use_residuals_method=residuals).to(device)
     print('Number of parameters:', sum(p.numel() for p in model.parameters()))
     
@@ -141,6 +142,7 @@ else:
                             n_basis=n_basis,
                             model_type=arch,
                             method=train_method,
+                            regularization_parameter=regularization_parameter,
                             use_residuals_method=residuals).to(device)
     model.load_state_dict(torch.load(f"{logdir}/model.pth"))
 
