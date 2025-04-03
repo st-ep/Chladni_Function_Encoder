@@ -120,14 +120,16 @@ parser.add_argument("--batch_size", type=int, default=32)
 parser.add_argument("--learning_rate", type=float, default=1e-3)
 parser.add_argument("--scheduler_step", type=int, default=100)
 parser.add_argument("--scheduler_gamma", type=float, default=0.5)
-parser.add_argument("--n_samples_train", type=int, default=800, 
-                    help="Number of samples for training")
+parser.add_argument("--n_samples_train", type=int, default=-1, 
+                    help="Number of samples for training, use -1 for all available samples")
 parser.add_argument("--n_samples_test", type=int, default=200,
                     help="Number of samples for testing")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--output_dir", type=str, default="fno_results")
 parser.add_argument("--data_file", type=str, default="ChladniData.mat",
                     help="Path to ChladniData.mat file")
+parser.add_argument("--use_provided_test", action="store_true", 
+                    help="Use test data directly from .mat file instead of splitting training data")
 args = parser.parse_args()
 
 # Set random seeds
@@ -169,39 +171,124 @@ def prepare_data_for_fno():
     """Prepare data in the format required by FNO"""
     # Get the grid and force/displacement data
     grid = s_dataset.grid
-    s_data = s_dataset.S_train
-    z_data = z_dataset.Z_train
     
     # Determine grid size (assuming square grid)
     n_side = int(np.sqrt(s_dataset.num_points))
     
-    # Reshape data for FNO (batch, height, width, channels)
-    x_data = []
-    y_data = []
-    
-    for i in range(s_data.shape[0]):
-        # Reshape to 2D grid format
-        x = s_data[i].reshape(1, n_side, n_side)
-        y = z_data[i].reshape(1, n_side, n_side)
+    if args.use_provided_test:
+        print("Using test data directly from .mat file...")
+        # Load test data from .mat file
+        with h5py.File(args.data_file, 'r') as f:
+            S_test = np.array(f['S_test']).transpose()
+            Z_test = np.array(f['Z_test']).transpose()
         
-        x_data.append(x)
-        y_data.append(y)
-    
-    x_data = torch.stack(x_data)
-    y_data = torch.stack(y_data)
-    
-    # Split into train and test
-    n_train = args.n_samples_train
-    
-    x_train = x_data[:n_train].to(device)
-    y_train = y_data[:n_train].to(device)
-    x_test = x_data[n_train:n_train+args.n_samples_test].to(device)
-    y_test = y_data[n_train:n_train+args.n_samples_test].to(device)
+        # Convert to tensors with same processing as training data
+        S_test = torch.tensor(S_test, dtype=s_dataset.dtype, device=s_dataset.device)
+        Z_test = torch.tensor(Z_test, dtype=z_dataset.dtype, device=z_dataset.device)
+        
+        # Process S_test same as S_train
+        S_test = S_test.permute(2, 0, 1)
+        S_test = S_test.contiguous()
+        S_test = S_test.unsqueeze(-1)
+        
+        # Process Z_test same as Z_train
+        Z_test = Z_test.permute(2, 0, 1)
+        Z_test = Z_test.contiguous()
+        Z_test = Z_test.unsqueeze(-1)
+        
+        # Apply normalization to Z_test using Z_train parameters (if your dataset applies normalization)
+        if hasattr(z_dataset, 'Z_min') and hasattr(z_dataset, 'Z_max'):
+            Z_min, Z_max = z_dataset.Z_min, z_dataset.Z_max
+            Z_range = Z_max - Z_min
+            if Z_range > 0:  # Avoid division by zero
+                Z_test = 2 * (Z_test - Z_min) / Z_range - 1
+                print(f"Normalized Z_test using Z_train parameters: min={Z_min:.8f}, max={Z_max:.8f}")
+        
+        # Get training data
+        s_data = s_dataset.S_train
+        z_data = z_dataset.Z_train
+        
+        # Use all available training samples if n_samples_train is -1
+        n_train = len(s_data) if args.n_samples_train == -1 else min(args.n_samples_train, len(s_data))
+        n_test = min(args.n_samples_test, S_test.shape[0])
+        
+        print(f"Using {n_train} training samples and {n_test} test samples")
+        
+        # Reshape data for FNO (batch, channels, height, width)
+        x_train_data = []
+        y_train_data = []
+        
+        for i in range(n_train):
+            # Reshape to 2D grid format
+            x = s_data[i].reshape(1, n_side, n_side)
+            y = z_data[i].reshape(1, n_side, n_side)
+            
+            x_train_data.append(x)
+            y_train_data.append(y)
+        
+        x_test_data = []
+        y_test_data = []
+        
+        for i in range(n_test):
+            # Reshape to 2D grid format
+            x = S_test[i].reshape(1, n_side, n_side)
+            y = Z_test[i].reshape(1, n_side, n_side)
+            
+            x_test_data.append(x)
+            y_test_data.append(y)
+        
+        x_train = torch.stack(x_train_data).to(device)
+        y_train = torch.stack(y_train_data).to(device)
+        x_test = torch.stack(x_test_data).to(device)
+        y_test = torch.stack(y_test_data).to(device)
+        
+        # Combine for later visualization
+        s_data_all = torch.cat([s_data[:n_train], S_test[:n_test]], dim=0)
+        
+    else:
+        # Original code path - split training data into train/test
+        print("Splitting training data into train/test sets...")
+        s_data = s_dataset.S_train
+        z_data = z_dataset.Z_train
+        
+        # Use all available samples for training minus test samples if n_samples_train is -1
+        total_available = len(s_data)
+        if args.n_samples_train == -1:
+            n_train = max(total_available - args.n_samples_test, 0)
+        else:
+            n_train = min(args.n_samples_train, total_available - args.n_samples_test)
+        n_test = min(args.n_samples_test, total_available - n_train)
+        
+        print(f"Using {n_train} training samples and {n_test} test samples out of {total_available} total samples")
+        
+        # Reshape data for FNO (batch, channels, height, width)
+        x_data = []
+        y_data = []
+        
+        for i in range(n_train + n_test):
+            # Reshape to 2D grid format
+            x = s_data[i].reshape(1, n_side, n_side)
+            y = z_data[i].reshape(1, n_side, n_side)
+            
+            x_data.append(x)
+            y_data.append(y)
+        
+        x_data = torch.stack(x_data)
+        y_data = torch.stack(y_data)
+        
+        # Split into train and test
+        x_train = x_data[:n_train].to(device)
+        y_train = y_data[:n_train].to(device)
+        x_test = x_data[n_train:n_train+n_test].to(device)
+        y_test = y_data[n_train:n_train+n_test].to(device)
+        
+        # For visualization
+        s_data_all = s_data[:n_train+n_test]
     
     print(f"Training data shape: {x_train.shape} -> {y_train.shape}")
     print(f"Testing data shape: {x_test.shape} -> {y_test.shape}")
     
-    return x_train, y_train, x_test, y_test, s_data
+    return x_train, y_train, x_test, y_test, s_data_all
 
 # Prepare data
 x_train, y_train, x_test, y_test, s_data_all = prepare_data_for_fno()
