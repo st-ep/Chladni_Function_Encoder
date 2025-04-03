@@ -20,18 +20,20 @@ parser.add_argument("--trunk_layers", type=str, default="512,512,256",
                     help="Comma-separated list of trunk network layer dimensions")
 parser.add_argument("--output_dim", type=int, default=256, 
                     help="Final output dimension for both branch and trunk networks")
-parser.add_argument("--epochs", type=int, default=100000)
+parser.add_argument("--epochs", type=int, default=150000)
 parser.add_argument("--batch_size", type=int, default=None, 
                     help="Batch size for training, None for full batch")
 parser.add_argument("--learning_rate", type=float, default=1e-3)
-parser.add_argument("--n_samples_train", type=int, default=800, 
-                    help="Number of samples for training")
+parser.add_argument("--n_samples_train", type=int, default=-1, 
+                    help="Number of samples for training, use -1 for all available samples")
 parser.add_argument("--n_samples_test", type=int, default=200,
                     help="Number of samples for testing")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--output_dir", type=str, default="vanilla_deeponet_results")
 parser.add_argument("--data_file", type=str, default="ChladniData.mat",
                     help="Path to ChladniData.mat file")
+parser.add_argument("--use_provided_test", action="store_true", 
+                    help="Use test data directly from .mat file instead of splitting training data")
 args = parser.parse_args()
 
 # Set random seeds
@@ -79,56 +81,114 @@ def prepare_data_for_deeponet():
     """Prepare data in the format required by DeepONet"""
     # Get the grid and force/displacement data
     grid = s_dataset.grid.cpu().numpy()
-    s_data = s_dataset.S_train.cpu().numpy()
-    z_data = z_dataset.Z_train.cpu().numpy()
+    
+    if args.use_provided_test:
+        print("Using test data directly from .mat file...")
+        # Load test data from .mat file
+        with h5py.File(args.data_file, 'r') as f:
+            S_test = np.array(f['S_test']).transpose()
+            Z_test = np.array(f['Z_test']).transpose()
+        
+        # Convert to tensors with same processing as training data
+        S_test = torch.tensor(S_test, dtype=s_dataset.dtype, device=s_dataset.device)
+        Z_test = torch.tensor(Z_test, dtype=z_dataset.dtype, device=z_dataset.device)
+        
+        # Process S_test same as S_train
+        S_test = S_test.permute(2, 0, 1)
+        S_test = S_test.contiguous()
+        S_test = S_test.unsqueeze(-1)
+        
+        # Process Z_test same as Z_train
+        Z_test = Z_test.permute(2, 0, 1)
+        Z_test = Z_test.contiguous()
+        Z_test = Z_test.unsqueeze(-1)
+        
+        # Apply normalization to Z_test using Z_train parameters (if your dataset applies normalization)
+        if hasattr(z_dataset, 'Z_min') and hasattr(z_dataset, 'Z_max'):
+            Z_min, Z_max = z_dataset.Z_min, z_dataset.Z_max
+            Z_range = Z_max - Z_min
+            if Z_range > 0:  # Avoid division by zero
+                Z_test = 2 * (Z_test - Z_min) / Z_range - 1
+                print(f"Normalized Z_test using Z_train parameters: min={Z_min:.8f}, max={Z_max:.8f}")
+        
+        # Get training data
+        s_data = s_dataset.S_train.cpu().numpy()
+        z_data = z_dataset.Z_train.cpu().numpy()
+        
+        # Get testing data
+        s_test_data = S_test.cpu().numpy()
+        z_test_data = Z_test.cpu().numpy()
+        
+        print(f"Training data shapes - S: {s_data.shape}, Z: {z_data.shape}")
+        print(f"Test data shapes - S: {s_test_data.shape}, Z: {z_test_data.shape}")
+        
+        # Use all available training samples if n_samples_train is -1
+        n_train = len(s_data) if args.n_samples_train == -1 else min(args.n_samples_train, len(s_data))
+        n_test = min(args.n_samples_test, s_test_data.shape[0])
+    else:
+        # Original code path - split training data into train/test
+        print("Splitting training data into train/test sets...")
+        s_data = s_dataset.S_train.cpu().numpy()
+        z_data = z_dataset.Z_train.cpu().numpy()
+        
+        # Use all available samples for training minus test samples if n_samples_train is -1
+        total_available = len(s_data)
+        if args.n_samples_train == -1:
+            n_train = max(total_available - args.n_samples_test, 0)
+        else:
+            n_train = min(args.n_samples_train, total_available - args.n_samples_test)
+        n_test = min(args.n_samples_test, total_available - n_train)
     
     # Reshape data
-    n_total = s_data.shape[0]
     n_side = int(np.sqrt(s_dataset.num_points))
     
     # Prepare branch input (forcing function on grid)
-    branch_inputs = []
-    for i in range(n_total):
+    branch_inputs_train = []
+    for i in range(n_train):
         # Reshape to remove the channel dimension and flatten
-        branch_inputs.append(s_data[i].reshape(n_side, n_side).flatten())
-    branch_inputs = np.array(branch_inputs)
+        branch_inputs_train.append(s_data[i].reshape(n_side, n_side).flatten())
+    branch_inputs_train = np.array(branch_inputs_train)
+    
+    # Prepare branch input for test data
+    branch_inputs_test = []
+    if args.use_provided_test:
+        for i in range(n_test):
+            branch_inputs_test.append(s_test_data[i].reshape(n_side, n_side).flatten())
+    else:
+        for i in range(n_test):
+            branch_inputs_test.append(s_data[n_train + i].reshape(n_side, n_side).flatten())
+    branch_inputs_test = np.array(branch_inputs_test)
     
     # Prepare trunk input (coordinates)
     trunk_inputs = grid
     
-    # Prepare outputs
-    outputs = []
-    for i in range(n_total):
-        # Reshape the displacement field
-        outputs.append(z_data[i].reshape(n_side, n_side).flatten())
-    outputs = np.array(outputs)
-    
-    # Split into train and test
-    n_train = args.n_samples_train
-    
-    branch_train = branch_inputs[:n_train]
-    branch_test = branch_inputs[n_train:n_train+args.n_samples_test]
-    
-    # For each point in the trunk input, we need corresponding outputs
-    full_outputs_train = []
-    full_outputs_test = []
-    
+    # Prepare outputs for training
+    outputs_train = []
     for i in range(n_train):
-        full_outputs_train.append(outputs[i])
+        # Reshape the displacement field
+        outputs_train.append(z_data[i].reshape(n_side, n_side).flatten())
+    outputs_train = np.array(outputs_train)
     
-    for i in range(args.n_samples_test):
-        full_outputs_test.append(outputs[n_train + i])
+    # Prepare outputs for testing
+    outputs_test = []
+    if args.use_provided_test:
+        for i in range(n_test):
+            outputs_test.append(z_test_data[i].reshape(n_side, n_side).flatten())
+    else:
+        for i in range(n_test):
+            outputs_test.append(z_data[n_train + i].reshape(n_side, n_side).flatten())
+    outputs_test = np.array(outputs_test)
     
-    full_outputs_train = np.array(full_outputs_train)
-    full_outputs_test = np.array(full_outputs_test)
-    
-    print(f"Branch input train shape: {branch_train.shape}")
-    print(f"Branch input test shape: {branch_test.shape}")
+    print(f"Branch input train shape: {branch_inputs_train.shape}")
+    print(f"Branch input test shape: {branch_inputs_test.shape}")
     print(f"Trunk input shape: {trunk_inputs.shape}")
-    print(f"Outputs train shape: {full_outputs_train.shape}")
-    print(f"Outputs test shape: {full_outputs_test.shape}")
+    print(f"Outputs train shape: {outputs_train.shape}")
+    print(f"Outputs test shape: {outputs_test.shape}")
     
-    return (branch_train, trunk_inputs), full_outputs_train, (branch_test, trunk_inputs), full_outputs_test, s_data
+    # Return all data
+    s_all_data = s_data if not args.use_provided_test else np.concatenate([s_data[:n_train], s_test_data[:n_test]], axis=0)
+    
+    return (branch_inputs_train, trunk_inputs), outputs_train, (branch_inputs_test, trunk_inputs), outputs_test, s_all_data
 
 # Prepare data
 x_train, y_train, x_test, y_test, s_data_all = prepare_data_for_deeponet()
