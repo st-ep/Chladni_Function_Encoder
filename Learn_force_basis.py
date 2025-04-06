@@ -21,10 +21,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n_basis", type=int, default=110)
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--train_method", type=str, default="least_squares")
-parser.add_argument("--epochs", type=int, default=2000000)
+parser.add_argument("--epochs", type=int, default=20000)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--residuals", action="store_true")
+parser.add_argument("--lambd", type=float, default=0.00005, help="Regularization parameter for least squares representation")
 args = parser.parse_args()
 
 epochs = args.epochs
@@ -34,6 +35,7 @@ train_method = args.train_method
 load_path = args.load_path
 residuals = args.residuals
 arch = 'MLP'
+lambd = args.lambd
 
 seed = args.seed
 np.random.seed(seed)
@@ -52,6 +54,7 @@ Hyperparameters:
 - Load Path: {load_path}
 - Residuals: {residuals}
 - Architecture: {arch}
+- Lambda (LS regularization): {lambd}
 """)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -68,8 +71,8 @@ torch.cuda.empty_cache()
 gc.collect()
 
 # Reduce batch size or add memory management
-dataset = ChladniDataset(n_functions=100)  
-dataset_eval = ChladniDataset(n_functions=100)  # Reduce from 512 to smaller batch
+dataset = ChladniDataset(n_functions=305)  
+dataset_eval = ChladniDataset(n_functions=305)  # Reduce from 512 to smaller batch
 
 # Optional: Set memory allocation strategy
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
@@ -110,7 +113,7 @@ if load_path is None:
                 self.losses.append(locals["prediction_loss"].item())
                 
                 # Save checkpoint every 200000 epochs (or adjust as needed)
-                if "epoch" in locals and locals["epoch"] % 200000 == 0 and self.model is not None:
+                if "epoch" in locals and locals["epoch"] % 100000 == 0 and self.model is not None:
                     print(f"Saving checkpoint at epoch {locals['epoch']}...")
                     torch.save(self.model.state_dict(), f"{logdir}/model_checkpoint_{locals['epoch']}.pth")
                     # Also save the latest checkpoint as model.pth
@@ -122,7 +125,8 @@ if load_path is None:
     callback = ListCallback([cb1, cb2, cb3])
     
     # train the model
-    model.train_model(dataset, epochs=epochs, callback=callback)
+    kwargs = {'lambd': lambd}
+    model.train_model(dataset, epochs=epochs, callback=callback, **kwargs)
     
     # Wait for tensorboard to finish writing
     cb1.tensorboard.flush()
