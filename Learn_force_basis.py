@@ -21,11 +21,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n_basis", type=int, default=110)
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--train_method", type=str, default="least_squares")
-parser.add_argument("--epochs", type=int, default=20000)
+parser.add_argument("--epochs", type=int, default=50000)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--residuals", action="store_true")
+parser.add_argument("--regularization_parameter", type=float, default=2.0)
 parser.add_argument("--lambd", type=float, default=0.00005, help="Regularization parameter for least squares representation")
+parser.add_argument("--optimizer_kwargs", type=str, default='{}')
 args = parser.parse_args()
 
 epochs = args.epochs
@@ -35,9 +37,11 @@ train_method = args.train_method
 load_path = args.load_path
 residuals = args.residuals
 arch = 'MLP'
+regularization_parameter = args.regularization_parameter
 lambd = args.lambd
-
 seed = args.seed
+optimizer_kwargs = eval(args.optimizer_kwargs)  # Convert string to dictionary
+
 np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
@@ -54,7 +58,9 @@ Hyperparameters:
 - Load Path: {load_path}
 - Residuals: {residuals}
 - Architecture: {arch}
+- Regularization Parameter: {regularization_parameter}
 - Lambda (LS regularization): {lambd}
+- Optimizer kwargs: {optimizer_kwargs}
 """)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -71,8 +77,8 @@ torch.cuda.empty_cache()
 gc.collect()
 
 # Reduce batch size or add memory management
-dataset = ChladniDataset(n_functions=305)  
-dataset_eval = ChladniDataset(n_functions=305)  # Reduce from 512 to smaller batch
+dataset = ChladniDataset(n_functions=100)  
+dataset_eval = ChladniDataset(n_functions=100)  # Reduce from 512 to smaller batch
 
 # Optional: Set memory allocation strategy
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
@@ -85,7 +91,9 @@ if load_path is None:
                             n_basis=n_basis,
                             model_type=arch,
                             method=train_method,
-                            use_residuals_method=residuals).to(device)
+                            regularization_parameter=regularization_parameter,
+                            use_residuals_method=residuals,
+                            optimizer_kwargs=optimizer_kwargs).to(device)
     print('Number of parameters:', sum(p.numel() for p in model.parameters()))
     
     # update learning rate
@@ -153,7 +161,9 @@ else:
                             n_basis=n_basis,
                             model_type=arch,
                             method=train_method,
-                            use_residuals_method=residuals).to(device)
+                            regularization_parameter=regularization_parameter,
+                            use_residuals_method=residuals,
+                            optimizer_kwargs=optimizer_kwargs).to(device)
     model.load_state_dict(torch.load(f"{logdir}/model.pth"))
 
 # For visualization, we pick one training sample and use the full grid from the dataset.
