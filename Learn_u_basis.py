@@ -21,11 +21,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n_basis", type=int, default=110)
 parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--train_method", type=str, default="least_squares")
-parser.add_argument("--epochs", type=int, default=2000000)
+parser.add_argument("--epochs", type=int, default=100000)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--load_path", type=str, default=None)
 parser.add_argument("--residuals", action="store_true")
-parser.add_argument("--regularization_parameter", type=float, default=2.0)
+parser.add_argument("--regularization_parameter", type=float, default=1.0)
+parser.add_argument("--lambd", type=float, default=0.0005, help="Regularization parameter for least squares representation")
+parser.add_argument("--optimizer_kwargs", type=str, default='{}')
 args = parser.parse_args()
 
 epochs = args.epochs
@@ -36,7 +38,9 @@ load_path = args.load_path
 residuals = args.residuals
 arch = 'MLP'
 regularization_parameter = args.regularization_parameter
+lambd = args.lambd
 seed = args.seed
+optimizer_kwargs = eval(args.optimizer_kwargs)  # Convert string to dictionary
 np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
@@ -54,6 +58,8 @@ Hyperparameters:
 - Residuals: {residuals}
 - Architecture: {arch}
 - Regularization Parameter: {regularization_parameter}
+- Lambda (LS regularization): {lambd}
+- Optimizer kwargs: {optimizer_kwargs}
 """)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -85,7 +91,8 @@ if load_path is None:
                             model_type=arch,
                             method=train_method,
                             regularization_parameter=regularization_parameter,
-                            use_residuals_method=residuals).to(device)
+                            use_residuals_method=residuals,
+                            optimizer_kwargs=optimizer_kwargs).to(device)
     print('Number of parameters:', sum(p.numel() for p in model.parameters()))
     
     # update learning rate
@@ -98,9 +105,12 @@ if load_path is None:
         def __init__(self):
             super().__init__()
             self.losses = []
+            self.model = None
             
         def on_training_start(self, locals: dict) -> None:
-            pass
+            # Store the model reference when training starts
+            if "self" in locals:
+                self.model = locals["self"]
             
         def on_training_end(self, locals: dict) -> None:
             pass
@@ -108,6 +118,13 @@ if load_path is None:
         def on_step(self, locals: dict) -> None:
             if "prediction_loss" in locals:
                 self.losses.append(locals["prediction_loss"].item())
+                
+                # Save checkpoint every 200000 epochs (or adjust as needed)
+                if "epoch" in locals and locals["epoch"] % 200000 == 0 and self.model is not None:
+                    print(f"Saving checkpoint at epoch {locals['epoch']}...")
+                    torch.save(self.model.state_dict(), f"{logdir}/model_checkpoint_{locals['epoch']}.pth")
+                    # Also save the latest checkpoint as model.pth
+                    torch.save(self.model.state_dict(), f"{logdir}/model.pth")
 
     cb1 = TensorboardCallback(logdir)
     cb2 = MSECallback(dataset, tensorboard=cb1.tensorboard)
@@ -115,7 +132,8 @@ if load_path is None:
     callback = ListCallback([cb1, cb2, cb3])
     
     # train the model
-    model.train_model(dataset, epochs=epochs, callback=callback)
+    kwargs = {'lambd': lambd}
+    model.train_model(dataset, epochs=epochs, callback=callback, **kwargs)
     
     # Wait for tensorboard to finish writing
     cb1.tensorboard.flush()
@@ -143,7 +161,8 @@ else:
                             model_type=arch,
                             method=train_method,
                             regularization_parameter=regularization_parameter,
-                            use_residuals_method=residuals).to(device)
+                            use_residuals_method=residuals,
+                            optimizer_kwargs=optimizer_kwargs).to(device)
     model.load_state_dict(torch.load(f"{logdir}/model.pth"))
 
 # For visualization, we pick one training sample and use the full grid from the dataset.

@@ -95,9 +95,12 @@ if load_path is None:
         def __init__(self):
             super().__init__()
             self.losses = []
+            self.model = None
             
         def on_training_start(self, locals: dict) -> None:
-            pass
+            # Store the model reference when training starts
+            if "self" in locals:
+                self.model = locals["self"]
             
         def on_training_end(self, locals: dict) -> None:
             pass
@@ -105,6 +108,13 @@ if load_path is None:
         def on_step(self, locals: dict) -> None:
             if "prediction_loss" in locals:
                 self.losses.append(locals["prediction_loss"].item())
+                
+                # Save checkpoint every 200000 epochs (or adjust as needed)
+                if "epoch" in locals and locals["epoch"] % 200000 == 0 and self.model is not None:
+                    print(f"Saving checkpoint at epoch {locals['epoch']}...")
+                    torch.save(self.model.state_dict(), f"{logdir}/model_checkpoint_{locals['epoch']}.pth")
+                    # Also save the latest checkpoint as model.pth
+                    torch.save(self.model.state_dict(), f"{logdir}/model.pth")
 
     cb1 = TensorboardCallback(logdir)
     cb2 = MSECallback(dataset, tensorboard=cb1.tensorboard)
